@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Downloaded binaries (never commit executables)
+/bin
+bin/
+
+# Build & installer outputs
+dist/
+release/
+out/
+*.asar
+*.blockmap
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Runtime / user secrets & local state
+bridge-auth.json
+history.json
+settings.json
+window-state.json
+.env
+.env.local
+*.local

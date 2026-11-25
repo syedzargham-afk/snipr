@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Snipr Download Manager (SDM)</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <header class="header">
+        <div class="brand">
+          <img src="icons/icon48.png" alt="Snipr" class="logo" />
+          <div>
+            <div class="title">Snipr</div>
+            <div class="sub">Download Manager (SDM)</div>
+          </div>
+        </div>
+        <div class="header-right">
+          <button id="token-toggle-btn" class="btn-mini" type="button" title="Configure pairing token">
+            Token
+          </button>
+          <div id="conn-pill" class="pill offline">
+            <span class="dot"></span>
+            <span id="conn-text">Checking...</span>
+          </div>
+        </div>
+      </header>
+
+      <section id="token-card" class="card hidden">
+        <div class="section-label">Pairing Token (from Snipr Settings)</div>
+        <div class="controls-row">
+          <input
+            id="token-input"
+            type="password"
+            class="input"
+            placeholder="Paste 64-char token from Snipr Settings"
+            autocomplete="off"
+          />
+          <button id="save-token-btn" class="btn-primary" type="button">Save</button>
+        </div>
+        <div id="token-status" class="hint">
+          Stored locally in chrome.storage.local and sent only to 127.0.0.1.
+        </div>
+      </section>
+
+      <div id="offline-box" class="alert hidden">
+        <strong id="offline-title">Snipr Desktop App is closed.</strong>
+        <span id="offline-desc">Open Snipr Download Manager on your PC to start downloading videos.</span>
+      </div>
+
+      <section class="card">
+        <div class="section-label">Current Page Video</div>
+        <div id="page-title" class="page-title">Loading tab...</div>
+        <div id="page-url" class="page-url"></div>
+
+        <div class="controls-row">
+          <select id="quality-select" class="select">
+            <option value="best">Best Quality (H.264 MP4)</option>
+            <option value="1080p">1080p HD (MP4)</option>
+            <option value="720p">720p HD (MP4)</option>
+            <option value="480p">480p SD (MP4)</option>
+            <option value="mp3">Audio Only (MP3)</option>
+          </select>
+          <button id="download-btn" class="btn-primary" type="button">
+            Download by Snipr
+          </button>
+        </div>
+        <div id="feedback" class="feedback hidden"></div>
+      </section>
+
+      <section id="active-card" class="card hidden">
+        <div class="section-label">Active in Snipr</div>
+        <div id="active-title" class="active-title"></div>
+        <div class="progress-track">
+          <div id="active-fill" class="progress-fill"></div>
+        </div>
+        <div class="active-meta">
+          <span id="active-stats"></span>
+          <button id="toggle-pause-btn" class="btn-mini" type="button">Pause</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-header">
+          <span class="section-label">Captured Media Streams</span>
+          <span id="stream-count" class="count-badge">0</span>
+        </div>
+        <div id="streams-list" class="streams-list">
+          <div class="empty">Play a video on this tab to detect streams.</div>
+        </div>
+      </section>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>

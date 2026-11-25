@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Snipr Download Manager (SDM)",
+  "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsGVMBsTOW+58+Pf5RH8d5eCkNO0+Spcf+EygPb9ExYXwDmREzC9VbdAnP8JVQWCJOXq/QHEAL2R0JDfcus6mIrL1k8nRfwdoBcd97ANM+FoJFTB+7A3ysvJWzxJ46/nr81tkJJAvG7YczCsUKIgdb4lXycSSEoDAAms8TaiFrQnYBpcGrWGQg8KVIBqGS4wKf6TB+y0lsLYC0zbwoKT61IuUOc7sJqvg8afgPsNc5d509qzx3T8m/SpjOodI+qobic/P4ZLI7yMR4WvzDw9cILIiNFQNxj8kzb6O+b39HF3QtY2ZOS+0FJYvcLwpPNfhjOR8b2+rVHm1UY4ZDhqtXwIDAQAB",
+  "description": "IDM-style browser companion for Snipr Download Manager (SDM). Shows 'Download by Snipr' on videos and captures media streams.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  },
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "storage",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:48921/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Snipr Download Manager (SDM)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Syntax check Electron, Setup & Extension scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            'electron/main.js',
+            'electron/preload.js',
+            'electron/store.js',
+            'electron/ytdlp.js',
+            'electron/downloads.js',
+            'electron/bridgeServer.js',
+            'scripts/setup-binaries.js',
+            'extension/background.js',
+            'extension/content.js',
+            'extension/popup.js'
+          )
+          foreach ($f in $files) {
+            node -c $f
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Validate Extension Manifest V3
+        shell: pwsh
+        run: |
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('extension/manifest.json', 'utf8'));
+            if (m.manifest_version !== 3) throw new Error('Expected MV3');
+            console.log('Manifest OK:', m.name, m.version);
+          "
+
+      - name: Build renderer
+        run: npm run build:renderer

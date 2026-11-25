@@ -1,0 +1,93 @@
+{
+  "name": "snipr-download-manager",
+  "version": "1.0.0",
+  "description": "Snipr Download Manager (SDM) — Precision. Speed. Control. Fast video & media downloader for Windows powered by yt-dlp, aria2c, and FFmpeg.",
+  "author": "Syed Zargham <https://github.com/syedzargham-afk>",
+  "license": "MIT",
+  "homepage": "https://github.com/syedzargham-afk/snipr#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/syedzargham-afk/snipr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/syedzargham-afk/snipr/issues"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "video-downloader",
+    "yt-dlp",
+    "aria2",
+    "ffmpeg",
+    "browser-extension",
+    "manifest-v3",
+    "windows"
+  ],
+  "main": "electron/main.js",
+  "scripts": {
+    "setup": "node scripts/setup-binaries.js",
+    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "build:renderer": "vite build",
+    "build": "npm run build:renderer && electron-builder --win",
+    "pack": "npm run build:renderer && electron-builder --dir"
+  },
+  "build": {
+    "appId": "com.snipr.sdm",
+    "productName": "Snipr Download Manager",
+    "copyright": "Copyright © 2026 Snipr Contributors",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "scripts/setup-binaries.js",
+      "assets/**/*",
+      "LICENSE",
+      "!docs/**/*",
+      "!extension/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "extension",
+        "to": "extension"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Snipr Download Manager",
+      "uninstallDisplayName": "Snipr Download Manager (SDM)",
+      "license": "LICENSE"
+    }
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.1.2",
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
+    "lucide-react": "^1.80.0",
+    "playwright-core": "^1.65.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "vite": "^6.4.6",
+    "wait-on": "^8.0.3"
+  }
+}

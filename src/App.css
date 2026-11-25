@@ -1,0 +1,18 @@
+.home-stack,
+.tab-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.preview-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.btn-download-main {
+  width: 100%;
+  min-height: 48px;
+  margin-top: var(--space-4);
+  font-size: var(--text-base);
+}

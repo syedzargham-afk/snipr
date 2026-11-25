@@ -58,7 +58,7 @@
 
 ## Installation (Windows)
 
-1. Download **`Snipr Download Manager Setup 1.0.0.exe`** from the [GitHub Releases](https://github.com/syedzargham-afk/snipr/releases) page.
+1. Download **`Snipr-Setup-1.0.0.exe`** from the [GitHub Releases](https://github.com/syedzargham-afk/snipr/releases) page.
 2. Run the installer (if Windows SmartScreen prompts, see the FAQ below).
 3. Launch **Snipr Download Manager** — on first launch, it automatically downloads `yt-dlp.exe`, `ffmpeg.exe`, and `aria2c.exe` into `%APPDATA%\snipr-download-manager\bin`.
 

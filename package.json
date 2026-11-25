@@ -35,7 +35,6 @@
     "appId": "com.snipr.sdm",
     "productName": "Snipr Download Manager",
     "copyright": "Copyright © 2026 Snipr Contributors",
-    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
     },
@@ -67,6 +66,7 @@
       "requestedExecutionLevel": "asInvoker"
     },
     "nsis": {
+      "artifactName": "Snipr-Setup-${version}.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
@@ -81,8 +81,8 @@
     "@fontsource/inter": "^5.3.0",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.1.2",
-    "electron": "^45.5.0",
-    "electron-builder": "^26.18.0",
+    "electron": "45.5.0",
+    "electron-builder": "26.18.0",
     "lucide-react": "^1.80.0",
     "playwright-core": "^1.65.1",
     "react": "^19.3.1",

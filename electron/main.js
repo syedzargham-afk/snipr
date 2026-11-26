@@ -15,7 +15,12 @@ const dns = require('node:dns');
 const { pathToFileURL } = require('node:url');
 
 dns.setDefaultResultOrder('ipv4first');
-const { getMissingBinaries, setupBinaries } = require('../scripts/setup-binaries');
+const {
+  getMissingBinaries,
+  getUnhealthyBinaries,
+  mapSetupError,
+  setupBinaries,
+} = require('../scripts/setup-binaries');
 const { createStore } = require('./store');
 const { autoUpdateYtDlp, fetchMetadata, probeMedia } = require('./ytdlp');
 const { createDownloadManager } = require('./downloads');
@@ -27,6 +32,11 @@ const {
 
 let mainWindow = null;
 let setupRunning = false;
+let currentSetupState = {
+  state: 'loading',
+  percent: 0,
+  message: 'Checking downloader tools...',
+};
 
 const PACKAGED_CSP = [
   "default-src 'self'",
@@ -112,39 +122,52 @@ async function isAuthorizedFolderTarget(targetPath, store, downloadManager) {
   });
 }
 
+function publishSetupState(next) {
+  currentSetupState = next;
+  mainWindow?.webContents.send('grabit:setupProgress', next);
+}
+
 async function ensureBinaries(binDir) {
   if (setupRunning) return;
-  const missing = getMissingBinaries(binDir);
-  if (missing.length === 0) {
-    mainWindow?.webContents.send('grabit:setupProgress', {
-      state: 'ready',
-      percent: 100,
-      message: 'Ready',
-    });
-    return;
-  }
-
   setupRunning = true;
   try {
+    const unhealthy = await getUnhealthyBinaries(binDir);
+    if (unhealthy.length === 0) {
+      publishSetupState({
+        state: 'ready',
+        percent: 100,
+        message: 'Ready',
+      });
+      void autoUpdateYtDlp(binDir);
+      return;
+    }
+
+    publishSetupState({
+      state: 'running',
+      percent: 2,
+      message: 'Setting up yt-dlp, aria2c, and FFmpeg...',
+    });
+
     await setupBinaries(binDir, (ev) => {
-      mainWindow?.webContents.send('grabit:setupProgress', {
+      publishSetupState({
         state: 'running',
         tool: ev.tool,
         percent: ev.percent,
         message: ev.message,
       });
     });
-    mainWindow?.webContents.send('grabit:setupProgress', {
+
+    publishSetupState({
       state: 'ready',
       percent: 100,
       message: 'Setup complete',
     });
     void autoUpdateYtDlp(binDir);
   } catch (err) {
-    mainWindow?.webContents.send('grabit:setupProgress', {
+    publishSetupState({
       state: 'error',
       percent: 0,
-      message: err?.message || 'Setup failed. Check your internet connection.',
+      message: mapSetupError(err),
     });
   } finally {
     setupRunning = false;
@@ -154,7 +177,14 @@ async function ensureBinaries(binDir) {
 function migrateLegacyUserData() {
   const newUserData = app.getPath('userData');
   const legacyUserData = path.join(app.getPath('appData'), 'grabit');
-  if (newUserData === legacyUserData || !fs.existsSync(legacyUserData)) return;
+  const markerPath = path.join(newUserData, '.legacy_migrated');
+  if (
+    newUserData === legacyUserData ||
+    !fs.existsSync(legacyUserData) ||
+    fs.existsSync(markerPath)
+  ) {
+    return;
+  }
 
   try {
     fs.mkdirSync(newUserData, { recursive: true });
@@ -170,17 +200,31 @@ function migrateLegacyUserData() {
         fs.copyFileSync(src, dst);
       }
     }
-    const legacyBin = path.join(legacyUserData, 'bin');
-    const newBin = path.join(newUserData, 'bin');
-    if (fs.existsSync(legacyBin) && !fs.existsSync(newBin)) {
-      fs.cpSync(legacyBin, newBin, { recursive: true });
-    }
+    fs.writeFileSync(markerPath, new Date().toISOString(), 'utf8');
   } catch {
     // Non-fatal migration error
   }
 }
 
+function applyEnvAppDataOverride() {
+  if (process.platform === 'win32' && process.env.APPDATA) {
+    const envAppData = path.resolve(process.env.APPDATA);
+    try {
+      if (
+        envAppData.toLowerCase() !==
+        path.resolve(app.getPath('appData')).toLowerCase()
+      ) {
+        app.setPath('appData', envAppData);
+        app.setPath('userData', path.join(envAppData, app.getName()));
+      }
+    } catch {
+      // Ignore if path override fails
+    }
+  }
+}
+
 async function bootstrap() {
+  applyEnvAppDataOverride();
   migrateLegacyUserData();
   // Deny all browser permission prompts (camera, mic, geolocation, notifications, etc.)
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, callback) => {
@@ -386,12 +430,7 @@ async function bootstrap() {
     }
 
     mainWindow.webContents.on('did-finish-load', () => {
-      const missing = getMissingBinaries(binDir);
-      if (missing.length > 0) {
-        void ensureBinaries(binDir);
-      } else {
-        void autoUpdateYtDlp(binDir);
-      }
+      void ensureBinaries(binDir);
     });
 
     mainWindow.on('closed', () => {
@@ -413,9 +452,16 @@ async function bootstrap() {
       wrappedStore.getBridgeAuth(),
     ]);
     const missing = getMissingBinaries(binDir);
+    const isReady =
+      missing.length === 0 &&
+      !setupRunning &&
+      currentSetupState.state !== 'error';
     return {
-      ready: missing.length === 0,
+      ready: isReady,
       missing,
+      setupState: isReady
+        ? { state: 'ready', percent: 100, message: 'Ready' }
+        : currentSetupState,
       settings,
       history,
       activeDownload: downloadManager.getCurrent(),
@@ -456,7 +502,12 @@ async function bootstrap() {
 
   handleIpc('grabit:runSetup', async () => {
     await ensureBinaries(binDir);
-    return { ready: getMissingBinaries(binDir).length === 0 };
+    return {
+      ready:
+        currentSetupState.state === 'ready' &&
+        getMissingBinaries(binDir).length === 0,
+      setupState: currentSetupState,
+    };
   });
 
   handleIpc('grabit:readClipboard', () => {
@@ -675,6 +726,7 @@ async function bootstrap() {
   });
 }
 
+applyEnvAppDataOverride();
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();

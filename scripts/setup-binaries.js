@@ -10,20 +10,94 @@ dns.setDefaultResultOrder('ipv4first');
 
 const execFileAsync = promisify(execFile);
 
-const REQUIRED_BINARIES = ['yt-dlp.exe', 'ffmpeg.exe', 'aria2c.exe'];
+const BINARY_SPECS = {
+  'yt-dlp.exe': { minBytes: 1_000_000, versionArgs: ['--version'] },
+  'ffmpeg.exe': { minBytes: 5_000_000, versionArgs: ['-version'] },
+  'ffprobe.exe': { minBytes: 5_000_000, versionArgs: ['-version'] },
+  'aria2c.exe': { minBytes: 500_000, versionArgs: ['--version'] },
+};
+
+const REQUIRED_BINARIES = Object.keys(BINARY_SPECS);
+
+function isBinaryStructurallyValid(filePath, name) {
+  const spec = BINARY_SPECS[name];
+  if (!spec || !filePath || !fs.existsSync(filePath)) return false;
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile() || stat.size < spec.minBytes) return false;
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const header = Buffer.alloc(2);
+      const bytesRead = fs.readSync(fd, header, 0, 2, 0);
+      // Windows PE executables must start with 'MZ' (0x4D 0x5A)
+      if (bytesRead < 2 || header[0] !== 0x4d || header[1] !== 0x5a) {
+        return false;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function verifyBinaryExecutable(filePath, name) {
+  if (!isBinaryStructurallyValid(filePath, name)) return false;
+  const spec = BINARY_SPECS[name];
+  try {
+    await execFileAsync(filePath, spec.versionArgs, {
+      windowsHide: true,
+      timeout: 8000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function getMissingBinaries(binDir) {
   return REQUIRED_BINARIES.filter((name) => {
     const full = path.join(binDir, name);
-    return !fs.existsSync(full);
+    return !isBinaryStructurallyValid(full, name);
   });
 }
 
-async function fetchWithRetry(url, options = {}, attempts = 4) {
+async function getUnhealthyBinaries(binDir) {
+  const missingOrCorrupt = [];
+  for (const name of REQUIRED_BINARIES) {
+    const full = path.join(binDir, name);
+    const healthy = await verifyBinaryExecutable(full, name);
+    if (!healthy) {
+      missingOrCorrupt.push(name);
+    }
+  }
+  return missingOrCorrupt;
+}
+
+function mapSetupError(err) {
+  const raw = String(err?.cause?.code || err?.code || err?.message || '').toLowerCase();
+  if (
+    raw.includes('enotfound') ||
+    raw.includes('eai_again') ||
+    raw.includes('econnrefused') ||
+    raw.includes('enetunreach') ||
+    raw.includes('ehostunreach') ||
+    raw.includes('etimedout') ||
+    raw.includes('fetch failed') ||
+    raw.includes('abort') ||
+    raw.includes('network')
+  ) {
+    return 'No internet connection or unable to reach download servers. Connect to the internet and click Retry Setup.';
+  }
+  return err?.message || 'Setup failed. Check your internet connection and click Retry Setup.';
+}
+
+async function fetchWithRetry(url, options = {}, attempts = 2) {
   let lastError;
   for (let i = 0; i < attempts; i++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    const timer = setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch(url, {
         redirect: 'follow',
@@ -43,7 +117,7 @@ async function fetchWithRetry(url, options = {}, attempts = 4) {
       clearTimeout(timer);
       lastError = err;
       if (i < attempts - 1) {
-        await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+        await new Promise((r) => setTimeout(r, 800 * (i + 1)));
       }
     }
   }
@@ -52,10 +126,10 @@ async function fetchWithRetry(url, options = {}, attempts = 4) {
 
 async function downloadSegment(url, start, end, fileHandle, onBytes) {
   let offset = start;
-  for (let attempt = 0; attempt < 8; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
     if (offset > end) return;
     const controller = new AbortController();
-    let stallTimer = setTimeout(() => controller.abort(), 45000);
+    let stallTimer = setTimeout(() => controller.abort(), 30000);
     try {
       const res = await fetch(url, {
         redirect: 'follow',
@@ -73,7 +147,7 @@ async function downloadSegment(url, start, end, fileHandle, onBytes) {
       const reader = res.body.getReader();
       try {
         while (true) {
-          stallTimer = setTimeout(() => controller.abort(), 45000);
+          stallTimer = setTimeout(() => controller.abort(), 30000);
           const { done, value } = await reader.read();
           clearTimeout(stallTimer);
           if (done) break;
@@ -88,11 +162,11 @@ async function downloadSegment(url, start, end, fileHandle, onBytes) {
         clearTimeout(stallTimer);
       }
       if (offset > end) return;
-      if (attempt === 7) throw new Error('Incomplete segment');
+      if (attempt === 5) throw new Error('Incomplete segment');
     } catch (err) {
       clearTimeout(stallTimer);
-      if (attempt === 7) throw err;
-      await new Promise((r) => setTimeout(r, 1500));
+      if (attempt === 5) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
     }
   }
 }
@@ -101,23 +175,18 @@ async function downloadFileParallel(url, destPath, onProgress, concurrency = 4) 
   await fsp.mkdir(path.dirname(destPath), { recursive: true });
   const tmpPath = `${destPath}.part`;
 
-  // Resolve redirects + size via HEAD (or fallback GET Range 0-0)
   let finalUrl = url;
   let total = 0;
   let supportsRanges = false;
 
-  try {
-    const headRes = await fetchWithRetry(url, { method: 'HEAD' }, 3);
-    finalUrl = headRes.url || url;
-    total = Number.parseInt(headRes.headers.get('content-length') || '0', 10);
-    supportsRanges =
-      (headRes.headers.get('accept-ranges') || '').toLowerCase().includes('bytes') &&
-      total > 512 * 1024;
-  } catch {
-    supportsRanges = false;
-  }
+  const headRes = await fetchWithRetry(url, { method: 'HEAD' }, 2);
+  finalUrl = headRes.url || url;
+  total = Number.parseInt(headRes.headers.get('content-length') || '0', 10);
+  supportsRanges =
+    (headRes.headers.get('accept-ranges') || '').toLowerCase().includes('bytes') &&
+    total > 512 * 1024;
 
-  if (supportsRanges && total > 0) {
+  if (supportsRanges && total > 0 && !fs.existsSync(tmpPath)) {
     const fh = await fsp.open(tmpPath, 'w+');
     try {
       await fh.truncate(total);
@@ -149,7 +218,7 @@ async function downloadFileParallel(url, destPath, onProgress, concurrency = 4) 
     return;
   }
 
-  // Fallback single-stream with Range resume
+  // Single-stream with Range resume when .part already exists
   let existingBytes = 0;
   try {
     const st = await fsp.stat(tmpPath);
@@ -158,10 +227,10 @@ async function downloadFileParallel(url, destPath, onProgress, concurrency = 4) 
     existingBytes = 0;
   }
 
-  for (let attempt = 0; attempt < 6; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
     const headers = existingBytes > 0 ? { Range: `bytes=${existingBytes}-` } : {};
     const controller = new AbortController();
-    let stallTimer = setTimeout(() => controller.abort(), 25000);
+    let stallTimer = setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch(finalUrl, {
         redirect: 'follow',
@@ -216,8 +285,8 @@ async function downloadFileParallel(url, destPath, onProgress, concurrency = 4) 
       return;
     } catch (err) {
       clearTimeout(stallTimer);
-      if (attempt === 5) throw err;
-      await new Promise((r) => setTimeout(r, 1200));
+      if (attempt === 3) throw err;
+      await new Promise((r) => setTimeout(r, 1000));
     }
   }
 }
@@ -234,10 +303,10 @@ function downloadWithAria2(aria2cPath, url, destPath, onProgress) {
       '--allow-overwrite=true',
       '--file-allocation=none',
       '--summary-interval=1',
-      '--connect-timeout=30',
-      '--timeout=45',
-      '--max-tries=10',
-      '--retry-wait=2',
+      '--connect-timeout=15',
+      '--timeout=25',
+      '--max-tries=5',
+      '--retry-wait=1',
       '-d',
       dir,
       '-o',
@@ -277,12 +346,16 @@ function downloadWithAria2(aria2cPath, url, destPath, onProgress) {
 }
 
 async function downloadFast(aria2cPath, url, destPath, onProgress) {
+  await fsp.mkdir(path.dirname(destPath), { recursive: true });
   if (aria2cPath && fs.existsSync(aria2cPath)) {
     try {
       await downloadWithAria2(aria2cPath, url, destPath, onProgress);
       return;
     } catch {
-      // Fallback to Node parallel downloader
+      // If aria2c left a partial without .aria2 control file, clean it before Node fallback
+      if (fs.existsSync(destPath) && !fs.existsSync(`${destPath}.aria2`)) {
+        await fsp.rm(destPath, { force: true }).catch(() => {});
+      }
     }
   }
   await downloadFileParallel(url, destPath, onProgress, 8);
@@ -319,6 +392,17 @@ async function findFileRecursive(dir, filename) {
   return null;
 }
 
+async function installAtomically(stagedPath, finalDest, name) {
+  const ok = await verifyBinaryExecutable(stagedPath, name);
+  if (!ok) {
+    throw new Error(`${name} failed integrity verification after download.`);
+  }
+  const tmpDest = `${finalDest}.tmp`;
+  await fsp.copyFile(stagedPath, tmpDest);
+  await fsp.rm(finalDest, { force: true });
+  await fsp.rename(tmpDest, finalDest);
+}
+
 async function resolveAria2Url() {
   try {
     const res = await fetchWithRetry('https://api.github.com/repos/aria2/aria2/releases/latest');
@@ -335,15 +419,17 @@ async function resolveAria2Url() {
   return 'https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip';
 }
 
-async function installAria2(binDir, emit) {
+async function installAria2(binDir, cacheDir, emit) {
   const dest = path.join(binDir, 'aria2c.exe');
-  if (fs.existsSync(dest)) return dest;
+  if (await verifyBinaryExecutable(dest, 'aria2c.exe')) return dest;
+  await fsp.rm(dest, { force: true });
 
   emit({ tool: 'aria2c', stage: 'downloading', percent: 0, message: 'Fetching aria2c release...' });
   const url = await resolveAria2Url();
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'snipr-aria2-'));
-  try {
-    const zipPath = path.join(tempDir, 'aria2.zip');
+  const zipPath = path.join(cacheDir, 'aria2.zip');
+  const extractDir = path.join(cacheDir, 'aria2-out');
+
+  if (!fs.existsSync(zipPath)) {
     await downloadFileParallel(
       url,
       zipPath,
@@ -356,30 +442,40 @@ async function installAria2(binDir, emit) {
         }),
       4
     );
-    emit({ tool: 'aria2c', stage: 'extracting', percent: 85, message: 'Extracting aria2c.exe...' });
-    const extractDir = path.join(tempDir, 'out');
-    await expandZip(zipPath, extractDir);
-    const exePath = await findFileRecursive(extractDir, 'aria2c.exe');
-    if (!exePath) {
-      throw new Error('aria2c.exe was not found in downloaded archive.');
-    }
-    await fsp.copyFile(exePath, dest);
-    emit({ tool: 'aria2c', stage: 'done', percent: 100, message: 'aria2c.exe ready' });
-    return dest;
-  } finally {
-    await fsp.rm(tempDir, { recursive: true, force: true });
   }
+
+  emit({ tool: 'aria2c', stage: 'extracting', percent: 85, message: 'Extracting aria2c.exe...' });
+  await fsp.rm(extractDir, { recursive: true, force: true });
+  try {
+    await expandZip(zipPath, extractDir);
+  } catch {
+    // Corrupt cached zip: remove and fail cleanly so retry downloads fresh
+    await fsp.rm(zipPath, { force: true });
+    throw new Error('Downloaded aria2c archive was corrupted. Retrying will download a fresh copy.');
+  }
+  const exePath = await findFileRecursive(extractDir, 'aria2c.exe');
+  if (!exePath) {
+    await fsp.rm(zipPath, { force: true });
+    throw new Error('aria2c.exe was not found in downloaded archive.');
+  }
+  await installAtomically(exePath, dest, 'aria2c.exe');
+  await fsp.rm(zipPath, { force: true });
+  await fsp.rm(extractDir, { recursive: true, force: true });
+  emit({ tool: 'aria2c', stage: 'done', percent: 100, message: 'aria2c.exe ready' });
+  return dest;
 }
 
-async function installYtDlp(binDir, aria2cPath, emit) {
+async function installYtDlp(binDir, cacheDir, aria2cPath, emit) {
   const dest = path.join(binDir, 'yt-dlp.exe');
-  if (fs.existsSync(dest)) return;
+  if (await verifyBinaryExecutable(dest, 'yt-dlp.exe')) return;
+  await fsp.rm(dest, { force: true });
 
+  const staged = path.join(cacheDir, 'yt-dlp.exe');
   emit({ tool: 'yt-dlp', stage: 'downloading', percent: 0, message: 'Downloading yt-dlp.exe...' });
   await downloadFast(
     aria2cPath,
     'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe',
-    dest,
+    staged,
     (percent) =>
       emit({
         tool: 'yt-dlp',
@@ -388,17 +484,33 @@ async function installYtDlp(binDir, aria2cPath, emit) {
         message: `Downloading yt-dlp.exe (${percent}%)`,
       })
   );
+
+  try {
+    await installAtomically(staged, dest, 'yt-dlp.exe');
+  } catch (err) {
+    await fsp.rm(staged, { force: true });
+    await fsp.rm(`${staged}.aria2`, { force: true });
+    throw err;
+  }
+  await fsp.rm(staged, { force: true });
   emit({ tool: 'yt-dlp', stage: 'done', percent: 100, message: 'yt-dlp.exe ready' });
 }
 
-async function installFfmpeg(binDir, aria2cPath, emit) {
-  const dest = path.join(binDir, 'ffmpeg.exe');
-  if (fs.existsSync(dest)) return;
+async function installFfmpeg(binDir, cacheDir, aria2cPath, emit) {
+  const ffmpegDest = path.join(binDir, 'ffmpeg.exe');
+  const ffprobeDest = path.join(binDir, 'ffprobe.exe');
+  const ffmpegOk = await verifyBinaryExecutable(ffmpegDest, 'ffmpeg.exe');
+  const ffprobeOk = await verifyBinaryExecutable(ffprobeDest, 'ffprobe.exe');
+  if (ffmpegOk && ffprobeOk) return;
+
+  if (!ffmpegOk) await fsp.rm(ffmpegDest, { force: true });
+  if (!ffprobeOk) await fsp.rm(ffprobeDest, { force: true });
 
   emit({ tool: 'ffmpeg', stage: 'downloading', percent: 0, message: 'Downloading FFmpeg essentials...' });
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'snipr-ffmpeg-'));
-  try {
-    const zipPath = path.join(tempDir, 'ffmpeg.zip');
+  const zipPath = path.join(cacheDir, 'ffmpeg.zip');
+  const extractDir = path.join(cacheDir, 'ffmpeg-out');
+
+  if (!fs.existsSync(zipPath)) {
     try {
       await downloadFast(
         aria2cPath,
@@ -426,42 +538,55 @@ async function installFfmpeg(binDir, aria2cPath, emit) {
           })
       );
     }
-
-    emit({ tool: 'ffmpeg', stage: 'extracting', percent: 85, message: 'Extracting ffmpeg.exe...' });
-    const extractDir = path.join(tempDir, 'out');
-    await expandZip(zipPath, extractDir);
-    const ffmpegExe = await findFileRecursive(extractDir, 'ffmpeg.exe');
-    if (!ffmpegExe) {
-      throw new Error('ffmpeg.exe was not found in downloaded archive.');
-    }
-    await fsp.copyFile(ffmpegExe, dest);
-
-    const ffprobeExe = await findFileRecursive(extractDir, 'ffprobe.exe');
-    if (ffprobeExe) {
-      await fsp.copyFile(ffprobeExe, path.join(binDir, 'ffprobe.exe'));
-    }
-    emit({ tool: 'ffmpeg', stage: 'done', percent: 100, message: 'ffmpeg.exe ready' });
-  } finally {
-    await fsp.rm(tempDir, { recursive: true, force: true });
   }
+
+  emit({ tool: 'ffmpeg', stage: 'extracting', percent: 85, message: 'Extracting ffmpeg.exe & ffprobe.exe...' });
+  await fsp.rm(extractDir, { recursive: true, force: true });
+  try {
+    await expandZip(zipPath, extractDir);
+  } catch {
+    await fsp.rm(zipPath, { force: true });
+    throw new Error('Downloaded FFmpeg archive was corrupted. Retrying will download a fresh copy.');
+  }
+
+  const ffmpegExe = await findFileRecursive(extractDir, 'ffmpeg.exe');
+  const ffprobeExe = await findFileRecursive(extractDir, 'ffprobe.exe');
+  if (!ffmpegExe || !ffprobeExe) {
+    await fsp.rm(zipPath, { force: true });
+    throw new Error('ffmpeg.exe or ffprobe.exe was not found in downloaded archive.');
+  }
+
+  if (!ffmpegOk) await installAtomically(ffmpegExe, ffmpegDest, 'ffmpeg.exe');
+  if (!ffprobeOk) await installAtomically(ffprobeExe, ffprobeDest, 'ffprobe.exe');
+
+  await fsp.rm(zipPath, { force: true });
+  await fsp.rm(extractDir, { recursive: true, force: true });
+  emit({ tool: 'ffmpeg', stage: 'done', percent: 100, message: 'FFmpeg & ffprobe ready' });
 }
 
 async function setupBinaries(binDir, onProgress) {
   const emit = onProgress || (() => {});
   await fsp.mkdir(binDir, { recursive: true });
 
-  const missing = getMissingBinaries(binDir);
-  if (missing.length === 0) {
+  const unhealthy = await getUnhealthyBinaries(binDir);
+  if (unhealthy.length === 0) {
     emit({ tool: 'all', stage: 'done', percent: 100, message: 'All binaries already installed.' });
     return { binDir, installed: [] };
   }
 
-  // Install aria2c first so we can accelerate yt-dlp & ffmpeg downloads
-  const aria2cPath = await installAria2(binDir, emit);
-  await installYtDlp(binDir, aria2cPath, emit);
-  await installFfmpeg(binDir, aria2cPath, emit);
+  const cacheDir = path.join(binDir, '.setup-cache');
+  await fsp.mkdir(cacheDir, { recursive: true });
 
-  return { binDir, installed: missing };
+  try {
+    const aria2cPath = await installAria2(binDir, cacheDir, emit);
+    await installYtDlp(binDir, cacheDir, aria2cPath, emit);
+    await installFfmpeg(binDir, cacheDir, aria2cPath, emit);
+    await fsp.rm(cacheDir, { recursive: true, force: true }).catch(() => {});
+  } catch (err) {
+    throw new Error(mapSetupError(err));
+  }
+
+  return { binDir, installed: unhealthy };
 }
 
 if (require.main === module) {
@@ -488,7 +613,12 @@ if (require.main === module) {
 }
 
 module.exports = {
+  BINARY_SPECS,
   REQUIRED_BINARIES,
+  isBinaryStructurallyValid,
+  verifyBinaryExecutable,
   getMissingBinaries,
+  getUnhealthyBinaries,
+  mapSetupError,
   setupBinaries,
 };

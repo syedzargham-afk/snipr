@@ -208,15 +208,17 @@ export default function App() {
         setDownload(init.activeDownload || null);
         setQueue(init.queue || []);
         if (init.extension) setExtensionInfo(init.extension);
-        setSetupState(
-          init.ready
-            ? { state: 'ready', percent: 100, message: 'Ready' }
-            : {
-                state: 'running',
-                percent: 0,
-                message: 'Setting up yt-dlp, aria2c, and FFmpeg...',
-              }
-        );
+        if (init.ready) {
+          setSetupState({ state: 'ready', percent: 100, message: 'Ready' });
+        } else if (init.setupState && init.setupState.state !== 'loading') {
+          setSetupState(init.setupState);
+        } else {
+          setSetupState({
+            state: 'running',
+            percent: 0,
+            message: 'Setting up yt-dlp, aria2c, and FFmpeg...',
+          });
+        }
       })
       .catch(() => {
         if (!active) return;
@@ -517,7 +519,13 @@ export default function App() {
                   percent: 0,
                   message: 'Retrying setup...',
                 });
-                void api.runSetup();
+                void api.runSetup().catch(() => {
+                  setSetupState({
+                    state: 'error',
+                    percent: 0,
+                    message: 'Setup failed. Check your internet connection and click Retry Setup.',
+                  });
+                });
               }}
             >
               Retry Setup

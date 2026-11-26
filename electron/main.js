@@ -280,6 +280,9 @@ async function bootstrap() {
     onStateChange: (state) => {
       mainWindow?.webContents.send('grabit:downloadState', state);
     },
+    onDownloadsChange: (downloads) => {
+      mainWindow?.webContents.send('grabit:downloadsUpdated', downloads);
+    },
     onQueueChange: (queue) => {
       mainWindow?.webContents.send('grabit:queueUpdated', queue);
     },
@@ -464,6 +467,7 @@ async function bootstrap() {
         : currentSetupState,
       settings,
       history,
+      downloads: downloadManager.getDownloads(),
       activeDownload: downloadManager.getCurrent(),
       queue: downloadManager.getQueue(),
       extension: {
@@ -551,28 +555,36 @@ async function bootstrap() {
     }
   });
 
-  handleIpc('grabit:pauseDownload', async () => {
+  handleIpc('grabit:pauseDownload', async (_e, id) => {
     try {
-      return { ok: true, data: await downloadManager.pause() };
+      return { ok: true, data: await downloadManager.pause(id) };
     } catch (err) {
       return { ok: false, error: err?.message || 'Unable to pause download.' };
     }
   });
 
-  handleIpc('grabit:resumeDownload', async () => {
+  handleIpc('grabit:resumeDownload', async (_e, id) => {
     try {
-      return { ok: true, data: await downloadManager.resume() };
+      return { ok: true, data: await downloadManager.resume(id) };
     } catch (err) {
       return { ok: false, error: err?.message || 'Unable to resume download.' };
     }
   });
 
-  handleIpc('grabit:cancelDownload', async () => {
+  handleIpc('grabit:cancelDownload', async (_e, id) => {
     try {
-      return { ok: true, data: await downloadManager.cancel() };
+      return { ok: true, data: await downloadManager.cancel(id) };
     } catch (err) {
       return { ok: false, error: err?.message || 'Unable to cancel download.' };
     }
+  });
+
+  handleIpc('grabit:dismissDownload', (_e, id) => {
+    return downloadManager.dismiss(id);
+  });
+
+  handleIpc('grabit:clearFinishedDownloads', () => {
+    return downloadManager.clearFinished();
   });
 
   handleIpc('grabit:removeFromQueue', (_e, id) => {

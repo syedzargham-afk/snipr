@@ -191,11 +191,16 @@ async function isAuthorizedMediaPath(targetPath, store, downloadManager) {
     return true;
   }
 
-  const active = downloadManager.getCurrent();
-  if (active?.filePath && fs.existsSync(active.filePath)) {
-    try {
-      if (fs.realpathSync(active.filePath) === realTarget) return true;
-    } catch {}
+  const activeList =
+    typeof downloadManager.getDownloads === 'function'
+      ? downloadManager.getDownloads()
+      : [downloadManager.getCurrent()].filter(Boolean);
+  for (const active of activeList) {
+    if (active?.filePath && fs.existsSync(active.filePath)) {
+      try {
+        if (fs.realpathSync(active.filePath) === realTarget) return true;
+      } catch {}
+    }
   }
 
   for (const entry of history) {
@@ -512,6 +517,10 @@ function createBridgeServer({
           shortName: 'Snipr',
           version: '1.0.0',
           ready: missing.length === 0,
+          downloads:
+            typeof downloadManager.getDownloads === 'function'
+              ? downloadManager.getDownloads()
+              : [],
           activeDownload: downloadManager.getCurrent(),
           queue: downloadManager.getQueue(),
           lastExtensionSeen,
@@ -534,12 +543,14 @@ function createBridgeServer({
       }
 
       if (req.method === 'POST' && reqPath === '/api/pause') {
-        sendJson(res, 200, { ok: true, data: await downloadManager.pause() });
+        const body = await readJsonBody(req).catch(() => ({}));
+        sendJson(res, 200, { ok: true, data: await downloadManager.pause(body.id) });
         return;
       }
 
       if (req.method === 'POST' && reqPath === '/api/resume') {
-        sendJson(res, 200, { ok: true, data: await downloadManager.resume() });
+        const body = await readJsonBody(req).catch(() => ({}));
+        sendJson(res, 200, { ok: true, data: await downloadManager.resume(body.id) });
         return;
       }
 

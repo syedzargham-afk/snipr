@@ -7,9 +7,11 @@ contextBridge.exposeInMainWorld('grabit', {
   copyText: (text) => ipcRenderer.invoke('grabit:copyText', text),
   fetchMetadata: (url) => ipcRenderer.invoke('grabit:fetchMetadata', url),
   startDownload: (payload) => ipcRenderer.invoke('grabit:startDownload', payload),
-  pauseDownload: () => ipcRenderer.invoke('grabit:pauseDownload'),
-  resumeDownload: () => ipcRenderer.invoke('grabit:resumeDownload'),
-  cancelDownload: () => ipcRenderer.invoke('grabit:cancelDownload'),
+  pauseDownload: (id) => ipcRenderer.invoke('grabit:pauseDownload', id),
+  resumeDownload: (id) => ipcRenderer.invoke('grabit:resumeDownload', id),
+  cancelDownload: (id) => ipcRenderer.invoke('grabit:cancelDownload', id),
+  dismissDownload: (id) => ipcRenderer.invoke('grabit:dismissDownload', id),
+  clearFinishedDownloads: () => ipcRenderer.invoke('grabit:clearFinishedDownloads'),
   removeFromQueue: (id) => ipcRenderer.invoke('grabit:removeFromQueue', id),
   clearQueue: () => ipcRenderer.invoke('grabit:clearQueue'),
   probeFile: (filePath) => ipcRenderer.invoke('grabit:probeFile', filePath),
@@ -32,6 +34,12 @@ contextBridge.exposeInMainWorld('grabit', {
     const handler = (_event, state) => callback(state);
     ipcRenderer.on('grabit:downloadState', handler);
     return () => ipcRenderer.removeListener('grabit:downloadState', handler);
+  },
+
+  onDownloadsUpdated: (callback) => {
+    const handler = (_event, list) => callback(list);
+    ipcRenderer.on('grabit:downloadsUpdated', handler);
+    return () => ipcRenderer.removeListener('grabit:downloadsUpdated', handler);
   },
 
   onQueueUpdated: (callback) => {

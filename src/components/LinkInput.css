@@ -116,6 +116,10 @@
   margin-left: auto;
   font-size: var(--text-xs);
   font-weight: 600;
+  color: var(--accent);
+}
+
+.queue-note.full {
   color: var(--warning);
 }
 

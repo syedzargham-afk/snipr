@@ -11,7 +11,8 @@ export default function LinkInput({
   onFetch,
   onClear,
   fetching,
-  busy,
+  activeCount = 0,
+  slotsFull = false,
 }) {
   function handleSubmit(e) {
     e.preventDefault();
@@ -86,8 +87,12 @@ export default function LinkInput({
             {platform}
           </span>
         ))}
-        {busy && !fetching && (
-          <span className="queue-note">Download active — new links will queue</span>
+        {activeCount > 0 && !fetching && (
+          <span className={`queue-note ${slotsFull ? 'full' : 'ready'}`}>
+            {slotsFull
+              ? '4 downloads running — new links will queue'
+              : `${activeCount} downloading — paste & start more anytime`}
+          </span>
         )}
       </div>
     </section>

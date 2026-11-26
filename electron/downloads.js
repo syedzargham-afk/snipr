@@ -15,25 +15,82 @@ const {
   sanitizeFilename,
 } = require('./ytdlp');
 
-function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) {
-  let current = null;
-  let activeProc = null;
-  let lastEmit = 0;
-  const queue = [];
+const DEFAULT_MAX_CONCURRENT_DOWNLOADS = 4;
+const ACTIVE_PROCESS_STATUSES = new Set(['downloading', 'merging', 'converting']);
 
-  function snapshot() {
-    return current ? { ...current } : null;
+function isRunningStatus(status) {
+  return ACTIVE_PROCESS_STATUSES.has(status);
+}
+
+function isLiveStatus(status) {
+  return isRunningStatus(status) || status === 'paused';
+}
+
+function createDownloadManager({
+  binDir,
+  store,
+  onStateChange,
+  onDownloadsChange,
+  onQueueChange,
+  maxConcurrent = DEFAULT_MAX_CONCURRENT_DOWNLOADS,
+}) {
+  /** @type {Map<string, object>} Ordered newest-first for UI updates */
+  const items = new Map();
+  /** @type {Map<string, import('node:child_process').ChildProcess>} */
+  const procs = new Map();
+  const queue = [];
+  let lastEmit = 0;
+  let pendingTimer = null;
+
+  function listSnapshots() {
+    return Array.from(items.values())
+      .sort((a, b) => b.createdAtMs - a.createdAtMs)
+      .map((item) => ({ ...item }));
+  }
+
+  function primarySnapshot() {
+    const list = listSnapshots();
+    return list.find((item) => isLiveStatus(item.status)) || list[0] || null;
   }
 
   function queueSnapshot() {
     return queue.map((q) => ({ ...q }));
   }
 
+  function runningCount() {
+    let count = 0;
+    for (const item of items.values()) {
+      if (isRunningStatus(item.status)) count += 1;
+    }
+    return count;
+  }
+
+  function flushEmit() {
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      pendingTimer = null;
+    }
+    lastEmit = Date.now();
+    const list = listSnapshots();
+    if (onDownloadsChange) onDownloadsChange(list);
+    if (onStateChange) {
+      const primary = list.find((item) => isLiveStatus(item.status)) || list[0] || null;
+      onStateChange(primary);
+    }
+  }
+
   function emit(force = false) {
-    const now = Date.now();
-    if (force || now - lastEmit >= 180) {
-      lastEmit = now;
-      onStateChange(snapshot());
+    if (force) {
+      flushEmit();
+      return;
+    }
+    const elapsed = Date.now() - lastEmit;
+    if (elapsed >= 180) {
+      flushEmit();
+    } else if (!pendingTimer) {
+      pendingTimer = setTimeout(() => {
+        flushEmit();
+      }, 180 - elapsed);
     }
   }
 
@@ -64,20 +121,12 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
   }
 
   async function processNextInQueue() {
-    if (queue.length === 0) return;
-    if (
-      current &&
-      (current.status === 'downloading' ||
-        current.status === 'merging' ||
-        current.status === 'converting' ||
-        current.status === 'paused')
-    ) {
-      return;
-    }
-    const nextItem = queue.shift();
-    emitQueue();
-    if (nextItem) {
-      await beginItem(nextItem);
+    while (queue.length > 0 && runningCount() < maxConcurrent) {
+      const nextItem = queue.shift();
+      emitQueue();
+      if (nextItem) {
+        await beginItem(nextItem);
+      }
     }
   }
 
@@ -135,10 +184,8 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
 
   async function finalizeSuccess(item, settings) {
     item.filePath = await resolveOutputFilePath(item);
-
     let probe = await probeMedia(binDir, item.filePath);
 
-    // Automatically ensure Windows-compatible H.264 + AAC for video downloads when enabled
     if (
       settings.compatibleMp4 !== false &&
       item.quality !== 'mp3' &&
@@ -156,42 +203,41 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
           binDir,
           item.filePath,
           (pct) => {
-            if (!current || current.id !== item.id) return;
-            if (current.status !== 'converting') return;
-            current.percent = pct;
+            const live = items.get(item.id);
+            if (!live || live.status !== 'converting') return;
+            live.percent = pct;
             emit(false);
           },
           (proc) => {
-            activeProc = proc;
+            procs.set(item.id, proc);
           }
         );
-        activeProc = null;
-        if (!current || current.id !== item.id) return;
-        if (current.status === 'cancelled' || current.status === 'paused') return;
+        procs.delete(item.id);
+        const live = items.get(item.id);
+        if (!live || live.status === 'cancelled' || live.status === 'paused') return;
         item.filePath = res.filePath;
         if (res.probe) probe = res.probe;
       } catch {
-        activeProc = null;
-        // Keep original file if conversion fails, user can still play in Snipr's built-in player
+        procs.delete(item.id);
       }
     }
 
-    if (!current || current.id !== item.id) return;
-    if (current.status === 'paused' || current.status === 'cancelled') return;
+    const live = items.get(item.id);
+    if (!live || live.status === 'paused' || live.status === 'cancelled') return;
 
-    current.status = 'completed';
-    current.percent = 100;
-    current.speedBps = 0;
-    current.etaSeconds = 0;
-    current.fileSize = probe?.fileSize || current.totalBytes || null;
-    current.vcodec = probe?.vcodec || null;
-    current.acodec = probe?.acodec || null;
-    current.windowsCompatible =
+    live.status = 'completed';
+    live.percent = 100;
+    live.speedBps = 0;
+    live.etaSeconds = 0;
+    live.fileSize = probe?.fileSize || live.totalBytes || null;
+    live.vcodec = probe?.vcodec || null;
+    live.acodec = probe?.acodec || null;
+    live.windowsCompatible =
       probe && typeof probe.windowsCompatible === 'boolean'
         ? probe.windowsCompatible
         : true;
     emit(true);
-    await recordHistory(current, 'Completed', probe);
+    await recordHistory(live, 'Completed', probe);
     void processNextInQueue();
   }
 
@@ -212,7 +258,7 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
     });
 
     const proc = spawnYtDlp(binDir, args);
-    activeProc = proc;
+    procs.set(item.id, proc);
 
     let buffer = '';
     let stderrText = '';
@@ -226,39 +272,35 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
       const lines = buffer.split(/\r?\n|\r/);
       buffer = lines.pop() || '';
       for (const line of lines) {
-        if (!current || current.id !== item.id) continue;
-        if (current.status === 'paused' || current.status === 'cancelled') continue;
+        const live = items.get(item.id);
+        if (!live || live.status === 'paused' || live.status === 'cancelled') continue;
 
         const parsed = parseProgressLine(line);
         if (!parsed) continue;
 
         if (parsed.type === 'progress') {
-          current.status = 'downloading';
-          current.percent = parsed.percent;
-          current.downloadedBytes = parsed.downloadedBytes;
-          current.totalBytes = parsed.totalBytes || current.totalBytes;
-          current.speedBps = parsed.speedBps;
-          current.etaSeconds = parsed.etaSeconds;
+          live.status = 'downloading';
+          live.percent = parsed.percent;
+          live.downloadedBytes = parsed.downloadedBytes;
+          live.totalBytes = parsed.totalBytes || live.totalBytes;
+          live.speedBps = parsed.speedBps;
+          live.etaSeconds = parsed.etaSeconds;
           emit(false);
         } else if (parsed.type === 'merging') {
-          current.status = 'merging';
-          current.speedBps = 0;
-          current.etaSeconds = null;
+          live.status = 'merging';
+          live.speedBps = 0;
+          live.etaSeconds = null;
           if (parsed.filePath && fs.existsSync(parsed.filePath)) {
-            current.filePath = parsed.filePath;
+            live.filePath = parsed.filePath;
           }
           emit(true);
         } else if (parsed.type === 'destination') {
-          if (
-            parsed.filePath &&
-            !current.filePath &&
-            fs.existsSync(parsed.filePath)
-          ) {
-            current.filePath = parsed.filePath;
+          if (parsed.filePath && !live.filePath && fs.existsSync(parsed.filePath)) {
+            live.filePath = parsed.filePath;
           }
         } else if (parsed.type === 'file') {
           if (parsed.filePath && fs.existsSync(parsed.filePath)) {
-            current.filePath = parsed.filePath;
+            live.filePath = parsed.filePath;
           }
         }
       }
@@ -268,44 +310,49 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
     proc.stderr.on('data', (c) => processChunk(c, true));
 
     proc.on('error', async () => {
-      activeProc = null;
-      if (!current || current.id !== item.id) return;
-      if (current.status === 'paused' || current.status === 'cancelled') return;
+      procs.delete(item.id);
+      const live = items.get(item.id);
+      if (!live || live.status === 'paused' || live.status === 'cancelled') return;
 
-      current.status = 'error';
-      current.speedBps = 0;
-      current.etaSeconds = null;
-      current.error = 'Unable to launch downloader process.';
+      live.status = 'error';
+      live.speedBps = 0;
+      live.etaSeconds = null;
+      live.error = 'Unable to launch downloader process.';
       emit(true);
-      await recordHistory(current, 'Error');
+      await recordHistory(live, 'Error');
+      void processNextInQueue();
     });
 
     proc.on('close', async (code) => {
-      activeProc = null;
-      if (!current || current.id !== item.id) return;
-      if (current.status === 'paused' || current.status === 'cancelled') return;
+      procs.delete(item.id);
+      const live = items.get(item.id);
+      if (!live || live.status === 'paused' || live.status === 'cancelled') return;
 
       if (code === 0) {
-        await finalizeSuccess(current, settings);
+        await finalizeSuccess(live, settings);
       } else {
-        current.status = 'error';
-        current.speedBps = 0;
-        current.etaSeconds = null;
-        current.error = mapYtDlpError(stderrText);
+        live.status = 'error';
+        live.speedBps = 0;
+        live.etaSeconds = null;
+        live.error = mapYtDlpError(stderrText);
         emit(true);
-        await recordHistory(current, 'Error');
+        await recordHistory(live, 'Error');
+        void processNextInQueue();
       }
     });
   }
 
   async function beginItem(payload) {
-    if (activeProc) {
-      await killProcessTree(activeProc);
-      activeProc = null;
+    const id = payload.id || crypto.randomUUID();
+    const existingProc = procs.get(id);
+    if (existingProc) {
+      await killProcessTree(existingProc);
+      procs.delete(id);
     }
+
     const settings = await store.getSettings();
-    current = {
-      id: payload.id || crypto.randomUUID(),
+    const item = {
+      id,
       url: payload.url,
       title: payload.title || 'Untitled Video',
       platform: payload.platform || 'Web',
@@ -325,28 +372,50 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
       speedBps: 0,
       etaSeconds: null,
       error: null,
+      createdAtMs: Date.now(),
     };
+    items.set(id, item);
     emit(true);
-    await runActiveDownload(current);
-    return snapshot();
+    await runActiveDownload(item);
+    return { ...item };
+  }
+
+  function resolveTargetItem(id, predicate) {
+    if (id && items.has(id)) {
+      const target = items.get(id);
+      return !predicate || predicate(target) ? target : null;
+    }
+    const ordered = Array.from(items.values()).sort((a, b) => b.createdAtMs - a.createdAtMs);
+    return ordered.find((item) => (!predicate || predicate(item))) || null;
   }
 
   return {
-    getCurrent: snapshot,
+    getCurrent: primarySnapshot,
+    getDownloads: listSnapshots,
     getQueue: queueSnapshot,
 
     async startDownload({ url, title, platform, thumbnail, quality, allowQueue = true }) {
       const validUrl = validateUrl(url);
-      const isBusy =
-        current &&
-        (current.status === 'downloading' ||
-          current.status === 'merging' ||
-          current.status === 'converting' ||
-          current.status === 'paused');
+      const normQuality = QUALITY_FORMATS[quality] ? quality : 'best';
 
-      if (isBusy) {
+      const duplicateLive = Array.from(items.values()).some(
+        (item) =>
+          isLiveStatus(item.status) &&
+          item.url === validUrl &&
+          item.quality === normQuality
+      );
+      const duplicateQueued = queue.some(
+        (q) => q.url === validUrl && q.quality === normQuality
+      );
+      if (duplicateLive || duplicateQueued) {
+        throw new Error('This video is already active in that quality.');
+      }
+
+      if (runningCount() >= maxConcurrent) {
         if (!allowQueue) {
-          throw new Error('A download is already in progress. Pause or cancel it first.');
+          throw new Error(
+            `Maximum ${maxConcurrent} concurrent downloads active. Pause or finish one first.`
+          );
         }
         const queuedItem = {
           id: crypto.randomUUID(),
@@ -354,21 +423,34 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
           title: title || 'Untitled Video',
           platform: platform || 'Web',
           thumbnail: thumbnail || null,
-          quality: QUALITY_FORMATS[quality] ? quality : 'best',
+          quality: normQuality,
           addedAt: new Date().toISOString(),
         };
         queue.push(queuedItem);
         emitQueue();
-        return { queued: true, item: queuedItem, current: snapshot(), queue: queueSnapshot() };
+        return {
+          queued: true,
+          item: queuedItem,
+          downloads: listSnapshots(),
+          current: primarySnapshot(),
+          queue: queueSnapshot(),
+        };
       }
 
-      return beginItem({
+      const started = await beginItem({
         url: validUrl,
         title,
         platform,
         thumbnail,
-        quality,
+        quality: normQuality,
       });
+      return {
+        queued: false,
+        item: started,
+        downloads: listSnapshots(),
+        current: primarySnapshot(),
+        queue: queueSnapshot(),
+      };
     },
 
     removeFromQueue(id) {
@@ -386,53 +468,81 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
       return [];
     },
 
-    async pause() {
-      if (
-        !current ||
-        (current.status !== 'downloading' && current.status !== 'merging')
-      ) {
-        return snapshot();
-      }
-      current.status = 'paused';
-      current.speedBps = 0;
-      current.etaSeconds = null;
+    async pause(id) {
+      const target = resolveTargetItem(
+        id,
+        (item) => item.status === 'downloading' || item.status === 'merging'
+      );
+      if (!target) return primarySnapshot();
+
+      target.status = 'paused';
+      target.speedBps = 0;
+      target.etaSeconds = null;
       emit(true);
-      if (activeProc) {
-        const p = activeProc;
-        activeProc = null;
-        await killProcessTree(p);
+
+      const proc = procs.get(target.id);
+      if (proc) {
+        procs.delete(target.id);
+        await killProcessTree(proc);
       }
-      return snapshot();
+      void processNextInQueue();
+      return { ...target };
     },
 
-    async resume() {
-      if (!current || (current.status !== 'paused' && current.status !== 'error')) {
-        return snapshot();
+    async resume(id) {
+      const target = resolveTargetItem(
+        id,
+        (item) => item.status === 'paused' || item.status === 'error'
+      );
+      if (!target) return primarySnapshot();
+
+      if (runningCount() >= maxConcurrent) {
+        items.delete(target.id);
+        queue.unshift({
+          id: target.id,
+          url: target.url,
+          title: target.title,
+          platform: target.platform,
+          thumbnail: target.thumbnail,
+          quality: target.quality,
+          addedAt: new Date().toISOString(),
+        });
+        emit(true);
+        emitQueue();
+        return null;
       }
-      current.status = 'downloading';
-      current.error = null;
+
+      target.status = 'downloading';
+      target.error = null;
       emit(true);
-      await runActiveDownload(current);
-      return snapshot();
+      await runActiveDownload(target);
+      return { ...target };
     },
 
-    async cancel() {
-      if (!current) return null;
-      const item = current;
-      item.status = 'cancelled';
-      item.speedBps = 0;
-      item.etaSeconds = null;
+    async cancel(id) {
+      const target = resolveTargetItem(id);
+      if (!target) return null;
+
+      if (target.status === 'completed') {
+        items.delete(target.id);
+        emit(true);
+        return listSnapshots();
+      }
+
+      target.status = 'cancelled';
+      target.speedBps = 0;
+      target.etaSeconds = null;
       emit(true);
 
-      if (activeProc) {
-        const p = activeProc;
-        activeProc = null;
-        await killProcessTree(p);
+      const proc = procs.get(target.id);
+      if (proc) {
+        procs.delete(target.id);
+        await killProcessTree(proc);
       }
 
       try {
-        const safePrefix = `${sanitizeFilename(item.title, 'video')} [${item.quality}]`;
-        const files = await fsp.readdir(item.outputDir);
+        const safePrefix = `${sanitizeFilename(target.title, 'video')} [${target.quality}]`;
+        const files = await fsp.readdir(target.outputDir);
         for (const f of files) {
           if (
             f.startsWith(safePrefix) &&
@@ -441,36 +551,57 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
               f.endsWith('.ytdl') ||
               f.endsWith('.grabit_h264_tmp.mp4'))
           ) {
-            await fsp.rm(path.join(item.outputDir, f), { force: true });
+            await fsp.rm(path.join(target.outputDir, f), { force: true });
           }
         }
       } catch {
         // Ignore cleanup errors
       }
 
-      await recordHistory(item, 'Cancelled');
-      current = null;
+      await recordHistory(target, 'Cancelled');
+      items.delete(target.id);
       emit(true);
       void processNextInQueue();
-      return null;
+      return listSnapshots();
+    },
+
+    dismiss(id) {
+      const target = resolveTargetItem(
+        id,
+        (item) => item.status === 'completed' || item.status === 'error'
+      );
+      if (target) {
+        items.delete(target.id);
+        emit(true);
+      }
+      return listSnapshots();
+    },
+
+    clearFinished() {
+      for (const [id, item] of items.entries()) {
+        if (item.status === 'completed' || item.status === 'error') {
+          items.delete(id);
+        }
+      }
+      emit(true);
+      return listSnapshots();
     },
 
     async convertExistingFile(historyId, filePath) {
       if (!filePath || !fs.existsSync(filePath)) {
         throw new Error('File no longer exists on disk.');
       }
-      if (
-        current &&
-        (current.status === 'downloading' ||
-          current.status === 'merging' ||
-          current.status === 'converting')
-      ) {
-        throw new Error('Wait for the active download to finish before converting.');
+      const hasConverting = Array.from(items.values()).some(
+        (item) => item.id === historyId && isRunningStatus(item.status)
+      );
+      if (hasConverting) {
+        throw new Error('Conversion is already running for this file.');
       }
 
+      const id = historyId || crypto.randomUUID();
       const fileName = path.basename(filePath);
-      current = {
-        id: historyId || crypto.randomUUID(),
+      const item = {
+        id,
         url: '',
         title: `Converting: ${fileName}`,
         platform: 'FFmpeg',
@@ -485,7 +616,9 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
         speedBps: 0,
         etaSeconds: null,
         error: null,
+        createdAtMs: Date.now(),
       };
+      items.set(id, item);
       emit(true);
 
       try {
@@ -493,24 +626,26 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
           binDir,
           filePath,
           (pct) => {
-            if (!current || current.status !== 'converting') return;
-            current.percent = pct;
+            const live = items.get(id);
+            if (!live || live.status !== 'converting') return;
+            live.percent = pct;
             emit(false);
           },
           (proc) => {
-            activeProc = proc;
+            procs.set(id, proc);
           }
         );
-        activeProc = null;
-        if (!current || current.status === 'cancelled') return null;
+        procs.delete(id);
+        const live = items.get(id);
+        if (!live || live.status === 'cancelled') return null;
 
-        current.status = 'completed';
-        current.percent = 100;
-        current.filePath = res.filePath;
-        current.fileSize = res.probe?.fileSize || null;
-        current.vcodec = res.probe?.vcodec || 'h264';
-        current.acodec = res.probe?.acodec || 'aac';
-        current.windowsCompatible = true;
+        live.status = 'completed';
+        live.percent = 100;
+        live.filePath = res.filePath;
+        live.fileSize = res.probe?.fileSize || null;
+        live.vcodec = res.probe?.vcodec || 'h264';
+        live.acodec = res.probe?.acodec || 'aac';
+        live.windowsCompatible = true;
         emit(true);
 
         if (historyId) {
@@ -522,13 +657,13 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
             windowsCompatible: true,
           });
         }
-        void processNextInQueue();
         return { ok: true, filePath: res.filePath, probe: res.probe };
       } catch (err) {
-        activeProc = null;
-        if (current) {
-          current.status = 'error';
-          current.error = err?.message || 'Conversion failed.';
+        procs.delete(id);
+        const live = items.get(id);
+        if (live) {
+          live.status = 'error';
+          live.error = err?.message || 'Conversion failed.';
           emit(true);
         }
         throw err;
@@ -536,13 +671,15 @@ function createDownloadManager({ binDir, store, onStateChange, onQueueChange }) 
     },
 
     async shutdown() {
-      if (activeProc) {
-        const p = activeProc;
-        activeProc = null;
-        await killProcessTree(p);
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
+        pendingTimer = null;
       }
+      const running = Array.from(procs.values());
+      procs.clear();
+      await Promise.all(running.map((p) => killProcessTree(p)));
     },
   };
 }
 
-module.exports = { createDownloadManager };
+module.exports = { createDownloadManager, DEFAULT_MAX_CONCURRENT_DOWNLOADS };

@@ -43,48 +43,24 @@ function formatEta(seconds) {
   return `${s}s`;
 }
 
-export default function ProgressBar({
+function DownloadItemCard({
   download,
-  queue = [],
   onPause,
   onResume,
   onCancel,
+  onDismiss,
   onOpenFolder,
   onOpenFile,
   onPlayInApp,
   onCopy,
-  onRemoveQueue,
-  onClearQueue,
-  onGoHome,
-  showEmptyState = false,
 }) {
   const [shareOpen, setShareOpen] = useState(false);
 
-  if (!download && queue.length === 0) {
-    if (!showEmptyState) return null;
-    return (
-      <div className="surface-card empty-state">
-        <div className="empty-state-icon">
-          <Download size={26} />
-        </div>
-        <h2 className="empty-state-title">No active downloads</h2>
-        <p className="empty-state-text">
-          Paste any video link on Home or click &ldquo;Download by Snipr&rdquo; in the browser extension to start downloading.
-        </p>
-        {onGoHome && (
-          <button type="button" className="btn btn-primary" onClick={onGoHome}>
-            Go to Home
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  const isCompleted = download?.status === 'completed';
-  const isPaused = download?.status === 'paused';
-  const isError = download?.status === 'error';
-  const isMerging = download?.status === 'merging';
-  const isConverting = download?.status === 'converting';
+  const isCompleted = download.status === 'completed';
+  const isPaused = download.status === 'paused';
+  const isError = download.status === 'error';
+  const isMerging = download.status === 'merging';
+  const isConverting = download.status === 'converting';
 
   const statusTone = isCompleted
     ? 'badge-success'
@@ -104,218 +80,296 @@ export default function ProgressBar({
           ? 'Paused'
           : isError
             ? 'Failed'
-            : `${(download?.percent || 0).toFixed(1)}%`;
+            : `${(download.percent || 0).toFixed(1)}%`;
 
   const fillWidth =
-    isMerging && (!download?.percent || download.percent < 95)
+    isMerging && (!download.percent || download.percent < 95)
       ? 98
-      : Math.min(100, Math.max(0, download?.percent || 0));
+      : Math.min(100, Math.max(0, download.percent || 0));
 
   return (
-    <div className="downloads-stack">
-      {download && (
-        <div className="surface-card download-item-card">
-          <div className="download-card-head">
-            <div className="download-thumb-box">
-              {download.thumbnail ? (
-                <img
-                  src={download.thumbnail}
-                  alt={download.title}
-                  className="download-thumb-img"
-                />
-              ) : (
-                <div className="download-thumb-img download-thumb-fallback">
-                  <Film size={20} />
-                </div>
-              )}
+    <div className="surface-card download-item-card" data-download-id={download.id}>
+      <div className="download-card-head">
+        <div className="download-thumb-box">
+          {download.thumbnail ? (
+            <img
+              src={download.thumbnail}
+              alt={download.title}
+              className="download-thumb-img"
+            />
+          ) : (
+            <div className="download-thumb-img download-thumb-fallback">
+              <Film size={20} />
             </div>
+          )}
+        </div>
 
-            <div className="download-card-meta">
-              <div className="download-title-row">
-                <h3 className="download-title" title={download.title}>
-                  {download.title}
-                </h3>
-                <span className={`badge ${statusTone}`}>{statusText}</span>
-              </div>
+        <div className="download-card-meta">
+          <div className="download-title-row">
+            <h3 className="download-title" title={download.title}>
+              {download.title}
+            </h3>
+            <span className={`badge ${statusTone}`}>{statusText}</span>
+          </div>
 
-              <div className="download-sub-row">
-                <span>{download.platform || 'Web'}</span>
+          <div className="download-sub-row">
+            <span>{download.platform || 'Web'}</span>
+            <span>•</span>
+            <span>{String(download.quality || 'best').toUpperCase()}</span>
+            {download.totalBytes > 0 && (
+              <>
                 <span>•</span>
-                <span>{String(download.quality || 'best').toUpperCase()}</span>
-                {download.totalBytes > 0 && (
-                  <>
-                    <span>•</span>
-                    <span>
-                      {formatBytes(download.downloadedBytes)} /{' '}
-                      {formatBytes(download.totalBytes)}
-                    </span>
-                  </>
-                )}
-                {download.status === 'downloading' && (
-                  <>
-                    <span>•</span>
-                    <span className="download-speed">
-                      {formatSpeed(download.speedBps)}
-                    </span>
-                    <span>•</span>
-                    <span>ETA {formatEta(download.etaSeconds)}</span>
-                  </>
-                )}
-                {isCompleted && download.vcodec && (
-                  <>
-                    <span>•</span>
-                    <span className="badge">
-                      {download.vcodec.toUpperCase()}
-                      {download.acodec ? ` / ${download.acodec.toUpperCase()}` : ''}
-                    </span>
-                  </>
-                )}
-              </div>
-            </div>
+                <span>
+                  {formatBytes(download.downloadedBytes)} /{' '}
+                  {formatBytes(download.totalBytes)}
+                </span>
+              </>
+            )}
+            {download.status === 'downloading' && (
+              <>
+                <span>•</span>
+                <span className="download-speed">
+                  {formatSpeed(download.speedBps)}
+                </span>
+                <span>•</span>
+                <span>ETA {formatEta(download.etaSeconds)}</span>
+              </>
+            )}
+            {isCompleted && download.vcodec && (
+              <>
+                <span>•</span>
+                <span className="badge">
+                  {download.vcodec.toUpperCase()}
+                  {download.acodec ? ` / ${download.acodec.toUpperCase()}` : ''}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
 
-            {!isCompleted && (
-              <div className="download-icon-controls">
-                {download.status === 'downloading' && (
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={onPause}
-                    aria-label="Pause download"
-                    title="Pause"
-                  >
-                    <Pause size={17} />
-                  </button>
-                )}
-                {(isPaused || isError) && (
-                  <button
-                    type="button"
-                    className="icon-btn primary"
-                    onClick={onResume}
-                    aria-label="Resume download"
-                    title="Resume"
-                  >
-                    <Play size={17} />
-                  </button>
-                )}
+        <div className="download-icon-controls">
+          {!isCompleted && download.status === 'downloading' && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => onPause(download.id)}
+              aria-label="Pause download"
+              title="Pause"
+            >
+              <Pause size={17} />
+            </button>
+          )}
+          {!isCompleted && (isPaused || isError) && (
+            <button
+              type="button"
+              className="icon-btn primary"
+              onClick={() => onResume(download.id)}
+              aria-label="Resume download"
+              title="Resume"
+            >
+              <Play size={17} />
+            </button>
+          )}
+          <button
+            type="button"
+            className={`icon-btn ${isCompleted ? '' : 'danger'}`}
+            onClick={() => (isCompleted ? onDismiss(download.id) : onCancel(download.id))}
+            aria-label={isCompleted ? 'Dismiss finished download' : 'Cancel download'}
+            title={isCompleted ? 'Dismiss card' : 'Cancel'}
+          >
+            <X size={17} />
+          </button>
+        </div>
+      </div>
+
+      <div
+        className="progress-track"
+        role="progressbar"
+        aria-valuenow={Math.round(fillWidth)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+      >
+        <div
+          className={`progress-fill ${isCompleted ? 'done' : ''} ${
+            download.status === 'downloading' ? 'active' : ''
+          } ${isConverting || isMerging ? 'processing' : ''}`}
+          style={{ width: `${fillWidth}%` }}
+        />
+      </div>
+
+      {isError && download.error && (
+        <div className="error-banner">{download.error}</div>
+      )}
+
+      {isCompleted && (
+        <div className="download-done-actions">
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => onPlayInApp(download)}
+            disabled={!download.filePath}
+          >
+            <Play size={14} />
+            <span>Play</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => onOpenFile(download.filePath)}
+            disabled={!download.filePath}
+          >
+            <ExternalLink size={14} />
+            <span>Windows Player</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => onOpenFolder(download.filePath || download.outputDir)}
+          >
+            <FolderOpen size={14} />
+            <span>Folder</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => onCopy(download.url, 'Link copied')}
+          >
+            <Copy size={14} />
+            <span>Copy Link</span>
+          </button>
+
+          <div className="share-wrap">
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => setShareOpen((prev) => !prev)}
+              aria-expanded={shareOpen}
+            >
+              <Share2 size={14} />
+              <span>Share</span>
+            </button>
+            {shareOpen && (
+              <div
+                className="share-menu"
+                onMouseLeave={() => setShareOpen(false)}
+              >
                 <button
                   type="button"
-                  className="icon-btn danger"
-                  onClick={onCancel}
-                  aria-label="Cancel download"
-                  title="Cancel"
+                  className="share-menu-item"
+                  onClick={() => {
+                    setShareOpen(false);
+                    onOpenFolder(download.filePath || download.outputDir);
+                  }}
                 >
-                  <X size={17} />
+                  Reveal in Explorer
+                </button>
+                <button
+                  type="button"
+                  className="share-menu-item"
+                  disabled={!download.filePath}
+                  onClick={() => {
+                    setShareOpen(false);
+                    onCopy(download.filePath, 'File path copied');
+                  }}
+                >
+                  Copy file path
+                </button>
+                <button
+                  type="button"
+                  className="share-menu-item"
+                  onClick={() => {
+                    setShareOpen(false);
+                    onCopy(
+                      `${download.title} - ${download.url}`,
+                      'Title + Link copied'
+                    );
+                  }}
+                >
+                  Copy Title + Link
                 </button>
               </div>
             )}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
-          <div className="progress-track" role="progressbar" aria-valuenow={Math.round(fillWidth)} aria-valuemin={0} aria-valuemax={100}>
-            <div
-              className={`progress-fill ${isCompleted ? 'done' : ''} ${
-                download.status === 'downloading' ? 'active' : ''
-              } ${isConverting || isMerging ? 'processing' : ''}`}
-              style={{ width: `${fillWidth}%` }}
-            />
-          </div>
+export default function ProgressBar({
+  downloads = [],
+  queue = [],
+  onPause,
+  onResume,
+  onCancel,
+  onDismiss,
+  onClearFinished,
+  onOpenFolder,
+  onOpenFile,
+  onPlayInApp,
+  onCopy,
+  onRemoveQueue,
+  onClearQueue,
+  onGoHome,
+  showEmptyState = false,
+}) {
+  if (downloads.length === 0 && queue.length === 0) {
+    if (!showEmptyState) return null;
+    return (
+      <div className="surface-card empty-state">
+        <div className="empty-state-icon">
+          <Download size={26} />
+        </div>
+        <h2 className="empty-state-title">No active downloads</h2>
+        <p className="empty-state-text">
+          Paste any video link on Home or click &ldquo;Download by Snipr&rdquo; in the browser extension to start downloading.
+        </p>
+        {onGoHome && (
+          <button type="button" className="btn btn-primary" onClick={onGoHome}>
+            Go to Home
+          </button>
+        )}
+      </div>
+    );
+  }
 
-          {isError && download.error && (
-            <div className="error-banner">{download.error}</div>
-          )}
+  const hasFinished = downloads.some(
+    (d) => d.status === 'completed' || d.status === 'error'
+  );
 
-          {isCompleted && (
-            <div className="download-done-actions">
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={() => onPlayInApp(download)}
-                disabled={!download.filePath}
-              >
-                <Play size={14} />
-                <span>Play</span>
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => onOpenFile(download.filePath)}
-                disabled={!download.filePath}
-              >
-                <ExternalLink size={14} />
-                <span>Windows Player</span>
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => onOpenFolder(download.filePath || download.outputDir)}
-              >
-                <FolderOpen size={14} />
-                <span>Folder</span>
-              </button>
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={() => onCopy(download.url, 'Link copied')}
-              >
-                <Copy size={14} />
-                <span>Copy Link</span>
-              </button>
-
-              <div className="share-wrap">
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => setShareOpen((prev) => !prev)}
-                  aria-expanded={shareOpen}
-                >
-                  <Share2 size={14} />
-                  <span>Share</span>
-                </button>
-                {shareOpen && (
-                  <div
-                    className="share-menu"
-                    onMouseLeave={() => setShareOpen(false)}
-                  >
-                    <button
-                      type="button"
-                      className="share-menu-item"
-                      onClick={() => {
-                        setShareOpen(false);
-                        onOpenFolder(download.filePath || download.outputDir);
-                      }}
-                    >
-                      Reveal in Explorer
-                    </button>
-                    <button
-                      type="button"
-                      className="share-menu-item"
-                      disabled={!download.filePath}
-                      onClick={() => {
-                        setShareOpen(false);
-                        onCopy(download.filePath, 'File path copied');
-                      }}
-                    >
-                      Copy file path
-                    </button>
-                    <button
-                      type="button"
-                      className="share-menu-item"
-                      onClick={() => {
-                        setShareOpen(false);
-                        onCopy(
-                          `${download.title} - ${download.url}`,
-                          'Title + Link copied'
-                        );
-                      }}
-                    >
-                      Copy Title + Link
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
+  return (
+    <div className="downloads-stack">
+      {(downloads.length > 1 || hasFinished) && (
+        <div className="downloads-bar-header">
+          <span className="downloads-bar-count">
+            Downloads ({downloads.length})
+          </span>
+          {hasFinished && onClearFinished && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={onClearFinished}
+            >
+              Clear Finished
+            </button>
           )}
         </div>
       )}
+
+      {downloads.map((item) => (
+        <DownloadItemCard
+          key={item.id}
+          download={item}
+          onPause={onPause}
+          onResume={onResume}
+          onCancel={onCancel}
+          onDismiss={onDismiss}
+          onOpenFolder={onOpenFolder}
+          onOpenFile={onOpenFile}
+          onPlayInApp={onPlayInApp}
+          onCopy={onCopy}
+        />
+      ))}
 
       {queue.length > 0 && (
         <div className="surface-card queue-card">

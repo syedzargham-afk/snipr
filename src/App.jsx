@@ -65,9 +65,11 @@ function createApiClient() {
     },
     fetchMetadata: (url) => postJson('/api/fetch', { url }),
     startDownload: (payload) => postJson('/api/download', payload),
-    pauseDownload: () => postJson('/api/pause'),
-    resumeDownload: () => postJson('/api/resume'),
-    cancelDownload: () => postJson('/api/cancel'),
+    pauseDownload: (id) => postJson('/api/pause', { id }),
+    resumeDownload: (id) => postJson('/api/resume', { id }),
+    cancelDownload: (id) => postJson('/api/cancel', { id }),
+    dismissDownload: (id) => postJson('/api/dismiss', { id }),
+    clearFinishedDownloads: () => postJson('/api/clear-finished'),
     removeFromQueue: (id) => postJson('/api/queue/remove', { id }),
     clearQueue: () => postJson('/api/queue/clear'),
     probeFile: (filePath) => postJson('/api/probe', { filePath }),
@@ -88,6 +90,12 @@ function createApiClient() {
       const handler = (e) => cb(JSON.parse(e.data));
       es.addEventListener('downloadState', handler);
       return () => es.removeEventListener('downloadState', handler);
+    },
+    onDownloadsUpdated(cb) {
+      const es = getEvents();
+      const handler = (e) => cb(JSON.parse(e.data));
+      es.addEventListener('downloadsUpdated', handler);
+      return () => es.removeEventListener('downloadsUpdated', handler);
     },
     onQueueUpdated(cb) {
       const es = getEvents();
@@ -131,7 +139,7 @@ export default function App() {
   const [fetching, setFetching] = useState(false);
   const [metadata, setMetadata] = useState(null);
   const [quality, setQuality] = useState('best');
-  const [download, setDownload] = useState(null);
+  const [downloads, setDownloads] = useState([]);
   const [queue, setQueue] = useState([]);
   const [history, setHistory] = useState([]);
   const [settings, setSettings] = useState({
@@ -171,8 +179,14 @@ export default function App() {
     let active = true;
 
     const unsubDownload = api.onDownloadProgress((next) => {
-      if (active) setDownload(next);
+      if (!active || api.onDownloadsUpdated) return;
+      setDownloads(next ? [next] : []);
     });
+    const unsubDownloads = api.onDownloadsUpdated
+      ? api.onDownloadsUpdated((list) => {
+          if (active) setDownloads(Array.isArray(list) ? list : []);
+        })
+      : () => {};
     const unsubQueue = api.onQueueUpdated
       ? api.onQueueUpdated((q) => {
           if (active) setQueue(q || []);
@@ -191,9 +205,11 @@ export default function App() {
             setExtensionInfo((prev) => ({ ...(prev || {}), ...ev.bridge }));
           }
           if (ev.type === 'grabbed') {
-            if (ev.url) setUrl(ev.url);
-            if (ev.metadata) setMetadata(ev.metadata);
-            setActiveTab('downloads');
+            if (ev.autoStart === false) {
+              if (ev.url) setUrl(ev.url);
+              if (ev.metadata) setMetadata(ev.metadata);
+              setActiveTab('home');
+            }
             showToast(`Added from Browser Extension: ${ev.title || 'Video'}`);
           }
         })
@@ -205,7 +221,12 @@ export default function App() {
         if (!active) return;
         setSettings((prev) => ({ ...prev, ...(init.settings || {}) }));
         setHistory(init.history || []);
-        setDownload(init.activeDownload || null);
+        const initDownloads = Array.isArray(init.downloads)
+          ? init.downloads
+          : init.activeDownload
+            ? [init.activeDownload]
+            : [];
+        setDownloads(initDownloads);
         setQueue(init.queue || []);
         if (init.extension) setExtensionInfo(init.extension);
         if (init.ready) {
@@ -232,6 +253,7 @@ export default function App() {
     return () => {
       active = false;
       unsubDownload();
+      unsubDownloads();
       unsubQueue();
       unsubHistory();
       unsubSetup();
@@ -302,15 +324,23 @@ export default function App() {
     };
   });
 
-  const isDownloadBusy =
-    download &&
-    (download.status === 'downloading' ||
-      download.status === 'merging' ||
-      download.status === 'converting' ||
-      download.status === 'paused');
+  const runningDownloadsCount = downloads.filter(
+    (d) =>
+      d.status === 'downloading' ||
+      d.status === 'merging' ||
+      d.status === 'converting'
+  ).length;
 
-  const activeDownloadsCount =
-    (isDownloadBusy ? 1 : 0) + (queue ? queue.length : 0);
+  const liveDownloadsCount = downloads.filter(
+    (d) =>
+      d.status === 'downloading' ||
+      d.status === 'merging' ||
+      d.status === 'converting' ||
+      d.status === 'paused'
+  ).length;
+
+  const slotsFull = runningDownloadsCount >= 4;
+  const activeDownloadsCount = liveDownloadsCount + (queue ? queue.length : 0);
 
   async function handlePaste() {
     const text = await api.readClipboard();
@@ -398,12 +428,15 @@ export default function App() {
       const msg = res.error || 'Could not start download.';
       setError(msg);
       showToast(msg, 'error');
-    } else if (res.data?.queued) {
-      showToast('Added to download queue');
-      setActiveTab('downloads');
     } else {
-      showToast('Download started');
-      setActiveTab('downloads');
+      // Clear input & preview immediately so user can paste & start another link right away
+      setUrl('');
+      setMetadata(null);
+      if (res.data?.queued) {
+        showToast('Added to download queue');
+      } else {
+        showToast('Download started — paste another link anytime');
+      }
     }
   }
 
@@ -598,7 +631,8 @@ export default function App() {
                   setError('');
                 }}
                 fetching={fetching}
-                busy={Boolean(isDownloadBusy)}
+                activeCount={liveDownloadsCount}
+                slotsFull={slotsFull}
               />
 
               {error && (
@@ -625,18 +659,20 @@ export default function App() {
                     onClick={() => void handleStartDownload()}
                   >
                     <Download size={18} />
-                    <span>{isDownloadBusy ? 'Add to Queue' : 'Download'}</span>
+                    <span>{slotsFull ? 'Add to Queue' : 'Download'}</span>
                   </button>
                 </section>
               )}
 
-              {!fetching && !metadata && download && (
+              {(downloads.length > 0 || queue.length > 0) && (
                 <ProgressBar
-                  download={download}
+                  downloads={downloads}
                   queue={queue}
-                  onPause={() => api.pauseDownload()}
-                  onResume={() => api.resumeDownload()}
-                  onCancel={() => api.cancelDownload()}
+                  onPause={(id) => api.pauseDownload(id)}
+                  onResume={(id) => api.resumeDownload(id)}
+                  onCancel={(id) => api.cancelDownload(id)}
+                  onDismiss={(id) => api.dismissDownload?.(id)}
+                  onClearFinished={() => api.clearFinishedDownloads?.()}
                   onOpenFolder={handleOpenFolder}
                   onOpenFile={handleOpenFile}
                   onPlayInApp={(item) => setPlayerItem(item)}
@@ -654,17 +690,27 @@ export default function App() {
                 <div>
                   <h1 className="page-title">Downloads</h1>
                   <p className="page-subtitle">
-                    Manage active downloads, speed, and your queue.
+                    Manage active parallel downloads, speed, and your queue.
                   </p>
                 </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setActiveTab('home')}
+                >
+                  <Link2 size={16} />
+                  <span>Add Link</span>
+                </button>
               </div>
 
               <ProgressBar
-                download={download}
+                downloads={downloads}
                 queue={queue}
-                onPause={() => api.pauseDownload()}
-                onResume={() => api.resumeDownload()}
-                onCancel={() => api.cancelDownload()}
+                onPause={(id) => api.pauseDownload(id)}
+                onResume={(id) => api.resumeDownload(id)}
+                onCancel={(id) => api.cancelDownload(id)}
+                onDismiss={(id) => api.dismissDownload?.(id)}
+                onClearFinished={() => api.clearFinishedDownloads?.()}
                 onOpenFolder={handleOpenFolder}
                 onOpenFile={handleOpenFile}
                 onPlayInApp={(item) => setPlayerItem(item)}
